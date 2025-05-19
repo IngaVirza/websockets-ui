@@ -1,9 +1,18 @@
-export const db = {
-  players: {} as Record<
-    string,
-    { name: string; password: string; wins: number; ws: any }
-  >,
-  rooms: [] as any[],
-  games: {} as Record<string, any>,
-  winners: [] as { name: string; wins: number }[],
+// src/db/inMemoryDB.ts
+import { Player, Room, Game, Ship, AttackStatus } from '../types/interfaces';
+
+interface InMemoryDB {
+  players: Map<string, Player>; // key: name
+  rooms: Map<string, Room>;
+  games: Map<string, Game>;
+  winners: Map<string, number>;
+}
+
+const db: InMemoryDB = {
+  players: new Map(),
+  rooms: new Map(),
+  games: new Map(),
+  winners: new Map(),
 };
+
+export default db;

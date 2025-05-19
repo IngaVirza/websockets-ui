@@ -1,58 +1,49 @@
-import { WebSocket } from 'ws';
-import { db } from '../db/inMemoryDB';
+import db from '../db/inMemoryDB';
+import { Player } from '../types/interfaces';
+import { generateId, sendMessage } from '../utils/utils';
 
-export function handleRegistration(ws: WebSocket, message: any) {
-  const { name, password } = message.data;
+interface RegData {
+  name: string;
+  password: string;
+}
 
-  if (db.players[name]) {
-    if (db.players[name].password !== password) {
-      ws.send(
-        JSON.stringify({
-          type: 'reg',
-          data: { name, index: null, error: true, errorText: 'Wrong password' },
-          id: 0,
-        })
-      );
-      return;
-    }
+export function handleReg(ws: WebSocket, data: RegData) {
+  const { name, password } = data;
+  let error = false;
+  let errorText = '';
+  let index = '';
+
+  if (!name || !password) {
+    error = true;
+    errorText = 'Name and password required';
   } else {
-    db.players[name] = { name, password, wins: 0, ws };
+    const existingPlayer = db.players.get(name);
+    if (existingPlayer) {
+      if (existingPlayer.password !== password) {
+        error = true;
+        errorText = 'Invalid password';
+      } else {
+        index = existingPlayer.id;
+        existingPlayer.ws = ws;
+      }
+    } else {
+      // create player
+      index = generateId();
+      const newPlayer: Player = { name, password, id: index, ws };
+      db.players.set(name, newPlayer);
+    }
   }
 
-  ws.send(
-    JSON.stringify({
-      type: 'reg',
-      data: { name, index: name, error: false, errorText: '' },
-      id: 0,
-    })
-  );
+  const response = {
+    type: 'reg',
+    data: {
+      name,
+      index,
+      error,
+      errorText,
+    },
+    id: 0,
+  };
 
-  updateRoomState();
-  updateWinners();
-}
-
-function updateRoomState() {
-  const rooms = db.rooms
-    .filter((room) => room.players.length === 1)
-    .map((room) => ({
-      roomId: room.id,
-      roomUsers: room.players.map((p: any) => ({
-        name: p.name,
-        index: p.index,
-      })),
-    }));
-  broadcast({ type: 'update_room', data: rooms, id: 0 });
-}
-
-function updateWinners() {
-  const list = Object.values(db.players).map((p) => ({
-    name: p.name,
-    wins: p.wins,
-  }));
-  broadcast({ type: 'update_winners', data: list, id: 0 });
-}
-
-function broadcast(msg: any) {
-  const json = JSON.stringify(msg);
-  Object.values(db.players).forEach((p) => p.ws.send(json));
+  sendMessage(ws, response);
 }

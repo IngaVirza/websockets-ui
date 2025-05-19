@@ -1,57 +1,122 @@
-import { WebSocket } from 'ws';
-import { db } from '../db/inMemoryDB';
-import { v4 as uuidv4 } from 'uuid';
+import db from '../db/inMemoryDB';
+import { generateId, sendMessage } from '../utils/utils';
 
-export function handleCreateRoom(ws: WebSocket, message: any) {
-  const player = getPlayerBySocket(ws);
-  if (!player) return;
-  const roomId = uuidv4();
-  db.rooms.push({ id: roomId, players: [player] });
-  updateRoomState();
+export function handleCreateRoom(ws: WebSocket, playerName: string) {
+  const roomId = generateId();
+  const room = {
+    roomId,
+    roomUsers: [{ name: playerName, index: '' }], // index will be assigned after game creation
+  };
+  db.rooms.set(roomId, room);
+
+  sendUpdateRoom();
 }
 
-export function handleAddUserToRoom(ws: WebSocket, message: any) {
-  const player = getPlayerBySocket(ws);
-  if (!player) return;
-  const room = db.rooms.find((r) => r.id === message.data.indexRoom);
-  if (!room) return;
+export function sendUpdateRoom() {
+  // send all rooms with only one player inside
+  const roomsList = Array.from(db.rooms.values())
+    .filter((r) => r.roomUsers.length === 1)
+    .map((r) => ({
+      roomId: r.roomId,
+      roomUsers: r.roomUsers.map((u) => ({ name: u.name, index: u.index })),
+    }));
 
-  room.players.push(player);
-  const gameId = uuidv4();
-  db.games[gameId] = { id: gameId, players: room.players, ships: {}, turn: 0 };
-  db.rooms = db.rooms.filter((r) => r.id !== room.id);
+  const message = {
+    type: 'update_room',
+    data: roomsList,
+    id: 0,
+  };
 
-  room.players.forEach((p, index) => {
-    p.ws.send(
-      JSON.stringify({
-        type: 'create_game',
-        data: { idGame: gameId, idPlayer: index },
-        id: 0,
-      })
-    );
+  // broadcast to all connected players
+  for (const player of db.players.values()) {
+    if (player.ws && player.ws.readyState === player.ws.OPEN) {
+      sendMessage(player.ws, message);
+    }
+  }
+}
+
+export function handleAddUserToRoom(
+  ws: WebSocket,
+  data: { indexRoom: string },
+  playerName: string
+) {
+  const { indexRoom } = data;
+  const room = db.rooms.get(indexRoom);
+
+  if (!room) {
+    sendMessage(ws, {
+      type: 'create_game',
+      data: {
+        error: true,
+        errorText: 'Room not found',
+      },
+      id: 0,
+    });
+    return;
+  }
+
+  if (room.roomUsers.length !== 1) {
+    sendMessage(ws, {
+      type: 'create_game',
+      data: {
+        error: true,
+        errorText: 'Room full or invalid',
+      },
+      id: 0,
+    });
+    return;
+  }
+
+  // add player to room
+  room.roomUsers.push({ name: playerName, index: '' });
+
+  // create game
+  const idGame = generateId();
+
+  // assign player ids in game session
+  const player1 = room.roomUsers[0];
+  const player2 = room.roomUsers[1];
+  player1.index = generateId();
+  player2.index = generateId();
+
+  // create Game session
+  db.games.set(idGame, {
+    idGame,
+    players: {
+      [player1.index]: {
+        ships: [],
+        attacksReceived: [],
+        indexPlayer: player1.index,
+      },
+      [player2.index]: {
+        ships: [],
+        attacksReceived: [],
+        indexPlayer: player2.index,
+      },
+    },
+    currentPlayerIndex: player1.index,
+    finished: false,
   });
 
-  updateRoomState();
-}
+  room.gameId = idGame;
 
-function updateRoomState() {
-  const rooms = db.rooms
-    .filter((room) => room.players.length === 1)
-    .map((room) => ({
-      roomId: room.id,
-      roomUsers: room.players.map((p: any) => ({
-        name: p.name,
-        index: p.index,
-      })),
-    }));
-  broadcast({ type: 'update_room', data: rooms, id: 0 });
-}
+  // Remove room from available rooms because it is now full
+  db.rooms.delete(indexRoom);
 
-function getPlayerBySocket(ws: WebSocket) {
-  return Object.values(db.players).find((p) => p.ws === ws);
-}
+  // Notify both players about game creation
+  for (const p of [player1, player2]) {
+    const playerObj = db.players.get(p.name);
+    if (playerObj?.ws && playerObj.ws.readyState === playerObj.ws.OPEN) {
+      sendMessage(playerObj.ws, {
+        type: 'create_game',
+        data: {
+          idGame,
+          idPlayer: p.index,
+        },
+        id: 0,
+      });
+    }
+  }
 
-function broadcast(msg: any) {
-  const json = JSON.stringify(msg);
-  Object.values(db.players).forEach((p) => p.ws.send(json));
+  sendUpdateRoom();
 }
